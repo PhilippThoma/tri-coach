@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tri Coach</title>
+<meta name="theme-color" content="#1f6f8b">
+<meta name="description" content="Daily triathlon session from your HRV, resting HR, sleep and training load.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Public+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="home">
+  <header class="top">
+    <div style="display:grid;gap:6px;min-width:0">
+      <div class="eyebrow" id="race"></div>
+      <h1 id="dayTitle">Tri Coach</h1>
+    </div>
+    <div class="tools">
+      <button type="button" class="icon-btn" id="syncBtn" aria-label="Sync with intervals.icu">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg></button>
+      <button type="button" class="icon-btn" id="settingsBtn" aria-label="Settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg></button>
+    </div>
+  </header>
+  <p class="status" id="status" aria-live="polite">Loading…</p>
+
+  <section class="card" aria-labelledby="checkinH">
+    <h2 id="checkinH">Morning check-in</h2>
+    <div class="signals">
+      <div class="signal"><label for="hrv"><span class="dot" id="dotHrv"></span>HRV</label><small id="hintHrv"></small>
+        <input id="hrv" inputmode="numeric" type="number" min="10" max="200" placeholder="ms"></div>
+      <div class="signal"><label for="rhr"><span class="dot" id="dotRhr"></span>Resting HR</label><small id="hintRhr"></small>
+        <input id="rhr" inputmode="numeric" type="number" min="30" max="100" placeholder="bpm"></div>
+      <div class="signal"><label for="sleep"><span class="dot" id="dotSleep"></span>Sleep</label><small id="hintSleep"></small>
+        <input id="sleep" inputmode="decimal" type="number" min="0" max="14" step="0.1" placeholder="h"></div>
+    </div>
+    <div style="display:grid;gap:8px">
+      <span style="font-weight:600">How do you feel?</span>
+      <div class="seg" role="group" aria-label="How do you feel">
+        <button type="button" id="feelFresh" data-feel="fresh" aria-pressed="false">Fresh</button>
+        <button type="button" id="feelNormal" data-feel="normal" aria-pressed="true">Normal</button>
+        <button type="button" id="feelTired" data-feel="tired" aria-pressed="false">Tired</button>
+      </div>
+    </div>
+    <label class="toggle"><input type="checkbox" id="sick"> Cold or flu symptoms</label>
+    <p class="source" id="source"></p>
+  </section>
+
+  <section class="verdict" id="verdict" aria-live="polite">
+    <span class="pill" id="pill"></span>
+    <div style="display:grid;gap:4px">
+      <span class="big session-title" id="sTitle"></span>
+      <span class="meta" id="sMeta"></span>
+    </div>
+    <ol class="steps" id="sSteps"></ol>
+    <ul class="why" id="sWhy"></ul>
+    <p class="commute" id="sCommute"></p>
+  </section>
+
+  <section class="card" aria-labelledby="tomorrowH">
+    <h2 id="tomorrowH">Tomorrow, if you recover as usual</h2>
+    <div style="display:grid;gap:4px"><span class="big session-title" style="font-size:24px" id="tTitle"></span>
+      <span class="meta" id="tMeta"></span></div>
+  </section>
+
+  <section class="card" aria-labelledby="loadH">
+    <h2 id="loadH">Your load</h2>
+    <div class="stats">
+      <div class="stat"><span class="big num" id="ctl"></span><span>fitness</span></div>
+      <div class="stat"><span class="big num" id="form"></span><span>form</span></div>
+      <div class="stat"><span class="big num" id="hard7"></span><span>hard days, 7 d</span></div>
+    </div>
+    <p class="meta" id="loadNote"></p>
+  </section>
+
+  <section class="card" aria-labelledby="weekH">
+    <h2 id="weekH">Last 7 days</h2>
+    <div class="list" id="week"></div>
+  </section>
+
+  <footer>After each session, answer “How did you feel?” on your watch. It syncs to intervals.icu.</footer>
+</main>
+
+<main id="settings" hidden>
+  <header class="top">
+    <h1>Settings</h1>
+    <button type="button" class="icon-btn" id="closeSettings" aria-label="Close settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </header>
+  <p class="meta" id="firstRun" hidden>Welcome. Enter your intervals.icu API key and your race to get started. Everything stays on this phone.</p>
+  <form id="settingsForm" class="card form">
+    <h2>intervals.icu</h2>
+    <label>API key<input id="apiKey" type="password" autocomplete="off" required>
+      <small>intervals.icu → Settings → Developer Settings. Stored only on this phone.</small></label>
+    <label>Athlete ID<input id="athleteId" placeholder="0"><small>Leave 0 for your own account.</small></label>
+    <label>History from<input id="historyStart" type="date"></label>
+
+    <h2>Race</h2>
+    <label>Name<input id="raceName"></label>
+    <label>Date<input id="raceDate" type="date" required></label>
+    <div class="three">
+      <label>Swim km<input id="swimKm" type="number" step="0.1" inputmode="decimal"></label>
+      <label>Bike km<input id="bikeKm" type="number" step="1" inputmode="decimal"></label>
+      <label>Run km<input id="runKm" type="number" step="0.1" inputmode="decimal"></label>
+    </div>
+
+    <h2>Your paces</h2>
+    <div class="three">
+      <label>FTP (W)<input id="ftp" type="number" inputmode="numeric" placeholder="auto"></label>
+      <label>Run threshold<input id="runThr" placeholder="3:45"></label>
+      <label>Swim CSS<input id="swimCss" placeholder="1:45"></label>
+    </div>
+    <small class="meta">FTP comes from intervals.icu when left empty. Run threshold per km, swim CSS per 100 m.</small>
+
+    <h2>Availability</h2>
+    <div class="two">
+      <label>No running until<input id="noRun" type="date"></label>
+      <label>No swimming until<input id="noSwim" type="date"></label>
+    </div>
+    <label>Swims per week<input id="swimsPerWeek" type="number" min="0" max="7" inputmode="numeric"></label>
+
+    <h2>Commute detection</h2>
+    <label>Rides without power are commutes from<input id="noPowerFrom" type="date"></label>
+    <div class="two">
+      <label>Before that, rides from km<input id="kmMin" type="number" inputmode="decimal"></label>
+      <label>to km<input id="kmMax" type="number" inputmode="decimal"></label>
+    </div>
+    <label>Name keywords<input id="keywords" placeholder="commute, work"></label>
+
+    <button type="submit" class="primary">Save and sync</button>
+    <button type="button" class="ghost" id="resetData">Download full history again</button>
+  </form>
+</main>
+
+<script src="logic.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
