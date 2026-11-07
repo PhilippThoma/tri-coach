@@ -1,5 +1,5 @@
 // Offline support: keeps the app's own files. intervals.icu requests always go to the network.
-const VERSION = "tri-coach-v2";
+const VERSION = "tri-coach-v3";
 const SHELL = ["./", "index.html", "style.css", "logic.js", "app.js", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", e => {
