@@ -48,6 +48,7 @@
       </div>
     </div>
     <label class="toggle"><input type="checkbox" id="sick"> Cold or flu symptoms</label>
+    <label class="toggle commute-toggle" id="noCommuteRow"><input type="checkbox" id="noCommute"> No bike commute today</label>
     <p class="source" id="source"></p>
   </section>
 
@@ -60,6 +61,11 @@
     <ol class="steps" id="sSteps"></ol>
     <ul class="why" id="sWhy"></ul>
     <p class="commute" id="sCommute"></p>
+    <div class="addon" id="strength" hidden>
+      <span class="addon-title" id="strTitle"></span>
+      <ul class="steps" id="strSteps"></ul>
+      <span class="meta" id="strWhy"></span>
+    </div>
   </section>
 
   <section class="card" aria-labelledby="tomorrowH">
@@ -119,9 +125,11 @@
 
     <h2>Availability</h2>
     <div class="two">
-      <label>No running until<input id="noRun" type="date"></label>
       <label>No swimming until<input id="noSwim" type="date"></label>
+      <label>No biking until<input id="noBike" type="date"></label>
+      <label>No running until<input id="noRun" type="date"></label>
     </div>
+    <small class="meta">For an injury or a break. Leave empty when everything is fine.</small>
     <label>Swims per week<input id="swimsPerWeek" type="number" min="0" max="7" inputmode="numeric"></label>
 
     <h2>Commute detection</h2>

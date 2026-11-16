@@ -187,6 +187,7 @@ function situation(cfg, acts, days, today) {
   for (const s of SPORTS) lastHard[s] = sorted.find(d => d < today && (days[d].kinds.has(`${s}-hard`) || days[d].kinds.has(`${s}-long`))) || null;
   const monday = shift(today, -weekdayMon0(today));
   const hrv7 = lastWeek.map(d => days[d].hrv_z).filter(z => z != null);
+  const strength = acts.filter(a => a.type === "WeightTraining" && a.date < today).map(a => a.date).sort();
   return {
     today, weeks_to_race: weeks, phase: phaseOf(weeks), ctl: dy.ctl, atl: dy.atl, form: dy.tsb,
     ramp_7d: dy.ctl - days[shift(yday, -7)].ctl,
@@ -196,6 +197,8 @@ function situation(cfg, acts, days, today) {
     swims_this_week: acts.filter(a => a.sport === "swim" && a.date >= monday && a.date < today).length,
     commute_load_7d: Math.round(acts.filter(a => a.commute && lastWeek.includes(a.date)).reduce((t, a) => t + a.load, 0)),
     hrv_trend_z: hrv7.length >= 4 ? mean(hrv7) : null,
+    strength_this_week: strength.filter(d => d >= monday).length,
+    last_strength: strength[strength.length - 1] || null,
   };
 }
 
@@ -263,9 +266,12 @@ function planDay(cfg, z, sit, date, level, extraKey, back) {
   if (sit.form < -20) noHard.push(`Fatigue is high (form ${Math.round(sit.form)}).`);
   if (sit.ramp_7d > 6) noHard.push(`Load rose fast this week (+${Math.round(sit.ramp_7d)} fitness).`);
 
-  const pick = (kind, prefs, minutes) => { for (const s of prefs) if (can[s]) return session(z, s, kind, ph, minutes); return session(z, "bike", "recovery", ph); };
+  const pick = (kind, prefs, minutes) => {
+    for (const s of prefs) if (can[s]) return session(z, s, kind, ph, minutes);
+    return can.bike ? session(z, "bike", "recovery", ph) : session(z, "rest", "rest", ph);
+  };
   const swimDue = can.swim && sit.swims_this_week < cfg.swimsPerWeek;
-  const out = (s, commute) => ({ level, session: s, why, commute: wd >= 5 ? "" : commute });
+  const out = (s, commute) => ({ level, session: s, why, commute: wd >= 5 || !can.bike ? "" : commute });
 
   if (level === "red") {
     why.unshift("Your body shows clear stress (HRV, resting HR, sleep or how you feel).");
@@ -275,7 +281,7 @@ function planDay(cfg, z, sit, date, level, extraKey, back) {
   if (level === "amber") {
     why.unshift("Recovery is not complete: easy training only today.");
     let s;
-    if (wd === 5) { s = pick("long", ["bike"], 120); s.title = "Shortened long ride"; }
+    if (wd === 5 && can.bike) { s = pick("long", ["bike"], 120); s.title = "Shortened long ride"; }
     else if (swimDue) s = pick("endurance", ["swim"]);
     else s = pick("endurance", ["bike", "run"], 60);
     return out(s, "Ride home easy, no ramp efforts.");
@@ -302,7 +308,55 @@ function planDay(cfg, z, sit, date, level, extraKey, back) {
       : "This session is your hard work. Ride home easy.");
   }
   if (can.swim) { why.push("Running and cycling are off, so a hard swim is today's quality."); return out(session(z, "swim", "quality", ph), "Ride home easy."); }
-  return out(session(z, "bike", "endurance", ph), "Ride home easy.");
+  why.push("All three sports are paused.");
+  return out(session(z, "rest", "rest", ph), "");
+}
+
+// Strength: 2× a week in base and build, 1× close to the race, none in the taper.
+// Never on red days, Fridays (before the long ride) or Saturdays, and never two days in a row.
+function strengthAddon(cfg, sit, date, plan, didToday) {
+  const wd = weekdayMon0(date);
+  const target = { base: 2, build: 2, "race-specific": 1, taper: 0 }[sit.phase];
+  const newWeek = date !== sit.today && wd === 0;
+  const done = newWeek ? 0 : sit.strength_this_week + (didToday ? 1 : 0);
+  const last = didToday ? sit.today : sit.last_strength;
+  if (plan.level === "red" || !target || done >= target || wd === 4 || wd === 5) return null;
+  if (last && daysBetween(last, date) < 2) return null;
+  const toe = cfg.unavailable.run && date < cfg.unavailable.run;
+  const heavy = sit.phase === "base";
+  return {
+    title: heavy ? "Add strength: 30–40 min" : "Add strength maintenance: 25 min",
+    steps: [
+      `Split squats ${heavy ? "3×8" : "2×6, heavier"} per leg`,
+      `Single-leg Romanian deadlift ${heavy ? "3×8" : "2×6"} per leg`,
+      `Glute bridge or hip thrust ${heavy ? "3×12" : "2×8"}`,
+      "Side plank or Copenhagen plank 3×30 s per side",
+      "Rows or pull-ups 3×8 (pulling strength for swimming)",
+      toe ? "Skip calf raises until your foot is fine" : `Slow calf raises ${heavy ? "3×12" : "2×10"}`,
+    ],
+    why: `${done} of ${target} strength sessions this week. Single-leg work also helps your left/right balance when running. Do it after training or in the evening.`,
+  };
+}
+
+// The "no bike commute today" tick: the commute is fatigue, not a planned session,
+// so the plan stays the same and only the volume and the advice around it change.
+function adjustForNoCommute(plan, date) {
+  const p = JSON.parse(JSON.stringify(plan));
+  p.commute = "";
+  if (weekdayMon0(date) >= 5) return p;
+  const s = p.session;
+  if (p.level !== "red" && s.sport === "bike" && s.title === "Endurance ride") {
+    s.minutes += 30;
+    s.steps[0] = s.steps[0].replace(/^\d+ min/, `${s.minutes} min`);
+    p.why.push("No commute today: 30 extra easy minutes replace the riding you'd normally do on the way home.");
+  } else if (p.level === "red" || s.sport === "rest") {
+    p.why.push("No commute today: that's extra recovery, which is what you need.");
+  } else if (s.sport === "bike") {
+    p.why.push("No commute today, so you start this session fresher. Do it as an indoor or road session.");
+  } else {
+    p.why.push("No commute today: about 35–50 load less than usual, so you'll be fresher tomorrow.");
+  }
+  return p;
 }
 
 // Everything the screen needs, for today and tomorrow at every readiness level.
@@ -333,6 +387,8 @@ function buildState(cfg, rawActs, rawWell, today) {
         }
       }
       plans[date][level] = planDay(cfg, z, sit, date, level, extra, back);
+      const didToday = date === tomorrow && !!plans[today].green.strength;
+      plans[date][level].strength = strengthAddon(cfg, sit, date, plans[date][level], didToday);
     }
   }
   const latest = wellness[today] && (wellness[today].hrv || wellness[today].rhr) ? { date: today, ...wellness[today] } : null;
@@ -359,4 +415,4 @@ function readiness(inp, B, trend) {
   return { level, sig, zh, zr };
 }
 
-if (typeof module !== "undefined") module.exports = { buildState, readiness, compactActivity, compactWellness, isoOf, shift };
+if (typeof module !== "undefined") module.exports = { buildState, readiness, adjustForNoCommute, compactActivity, compactWellness, isoOf, shift };

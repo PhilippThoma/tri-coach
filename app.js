@@ -18,7 +18,7 @@ const todayIso = () => isoOf(new Date());
 const defaults = () => ({
   apiKey: "", athleteId: "0", historyStart: shift(todayIso(), -540), ftp: null,
   race: { name: "", date: "", swim_km: 2, bike_km: 80, run_km: 18 },
-  paces: { runThr: 225, swimCss: 105 }, unavailable: { run: "", swim: "" }, swimsPerWeek: 2,
+  paces: { runThr: 225, swimCss: 105 }, unavailable: { run: "", swim: "", bike: "" }, swimsPerWeek: 2,
   commute: { noPowerFrom: "", kmMin: 0, kmMax: 0, keywords: ["commute", "work"] },
 });
 let cfg = Object.assign(defaults(), store.get(KEYS.settings, {}));
@@ -114,6 +114,8 @@ function renderHome() {
 
   const saved = store.get("checkin-" + state.today);
   const w = state.latest;
+  $("noCommuteRow").hidden = dateOf(state.today).getDay() % 6 === 0;
+  $("noCommute").checked = !!saved?.noCommute;
   if (saved) {
     $("hrv").value = saved.hrv ?? ""; $("rhr").value = saved.rhr ?? ""; $("sleep").value = saved.sleep ?? "";
     feel = saved.feel || "normal"; $("sick").checked = !!saved.sick;
@@ -156,7 +158,8 @@ function renderVerdict() {
   const inp = { hrv: $("hrv").value, rhr: $("rhr").value, sleep: $("sleep").value, feel, sick: $("sick").checked };
   const r = readiness(inp, state.baselines, state.sit.hrv_trend_z);
   for (const [k, id] of [["hrv", "dotHrv"], ["rhr", "dotRhr"], ["sleep", "dotSleep"]]) $(id).className = "dot " + (r.sig[k] || "");
-  const plan = state.plans[state.today][r.level];
+  const base = state.plans[state.today][r.level];
+  const plan = $("noCommute").checked ? adjustForNoCommute(base, state.today) : base;
   $("verdict").className = "verdict " + { green: "go", amber: "easy", red: "stop" }[r.level];
   $("pill").textContent = { green: "Ready: train", amber: "Easy day", red: "Recover" }[r.level];
   $("sTitle").textContent = plan.session.title;
@@ -168,14 +171,22 @@ function renderVerdict() {
   $("sWhy").replaceChildren(...why.map(li));
   $("sCommute").hidden = !plan.commute;
   $("sCommute").textContent = plan.commute ? "Commute: " + plan.commute : "";
+  $("strength").hidden = !plan.strength;
+  if (plan.strength) {
+    $("strTitle").textContent = plan.strength.title;
+    $("strSteps").replaceChildren(...plan.strength.steps.map(li));
+    $("strWhy").textContent = plan.strength.why;
+  }
   const tomorrow = shift(state.today, 1), t = state.plans[tomorrow].green.session;
   $("tTitle").textContent = t.title;
-  $("tMeta").textContent = `${DAYS[dateOf(tomorrow).getDay()]} · ${t.sport === "rest" ? "rest" : fmtMin(t.minutes)} · decided by tomorrow's check-in`;
+  $("tMeta").textContent = `${DAYS[dateOf(tomorrow).getDay()]} · ${t.sport === "rest" ? "rest" : fmtMin(t.minutes)}`
+    + (state.plans[tomorrow].green.strength ? " + strength" : "") + " · decided by tomorrow's check-in";
 }
 
 function onCheckin() {
   if (!state) return;
-  store.set("checkin-" + state.today, { hrv: $("hrv").value, rhr: $("rhr").value, sleep: $("sleep").value, feel, sick: $("sick").checked });
+  store.set("checkin-" + state.today, { hrv: $("hrv").value, rhr: $("rhr").value, sleep: $("sleep").value, feel,
+    sick: $("sick").checked, noCommute: $("noCommute").checked });
   $("source").textContent = "Your entries for today.";
   renderVerdict();
 }
@@ -190,7 +201,8 @@ function openSettings(firstRun = false) {
   v("apiKey", cfg.apiKey); v("athleteId", cfg.athleteId); v("historyStart", cfg.historyStart);
   v("raceName", cfg.race.name); v("raceDate", cfg.race.date); v("swimKm", cfg.race.swim_km); v("bikeKm", cfg.race.bike_km); v("runKm", cfg.race.run_km);
   v("ftp", cfg.ftp); v("runThr", fromPace(cfg.paces.runThr)); v("swimCss", fromPace(cfg.paces.swimCss));
-  v("noRun", cfg.unavailable.run); v("noSwim", cfg.unavailable.swim); v("swimsPerWeek", cfg.swimsPerWeek);
+  v("noRun", cfg.unavailable.run); v("noSwim", cfg.unavailable.swim); v("noBike", cfg.unavailable.bike);
+  v("swimsPerWeek", cfg.swimsPerWeek);
   v("noPowerFrom", cfg.commute.noPowerFrom); v("kmMin", cfg.commute.kmMin); v("kmMax", cfg.commute.kmMax);
   v("keywords", cfg.commute.keywords.join(", "));
   $("home").hidden = true; $("settings").hidden = false;
@@ -208,7 +220,7 @@ function saveSettings(e) {
     historyStart: $("historyStart").value || defaults().historyStart, ftp: n("ftp"),
     race: { name: $("raceName").value.trim(), date: $("raceDate").value, swim_km: n("swimKm") || 0, bike_km: n("bikeKm") || 0, run_km: n("runKm") || 0 },
     paces: { runThr: toPace($("runThr").value) || 225, swimCss: toPace($("swimCss").value) || 105 },
-    unavailable: { run: $("noRun").value, swim: $("noSwim").value }, swimsPerWeek: n("swimsPerWeek") ?? 2,
+    unavailable: { run: $("noRun").value, swim: $("noSwim").value, bike: $("noBike").value }, swimsPerWeek: n("swimsPerWeek") ?? 2,
     commute: { noPowerFrom: $("noPowerFrom").value, kmMin: n("kmMin") || 0, kmMax: n("kmMax") || 0,
       keywords: $("keywords").value.split(",").map(s => s.trim()).filter(Boolean) },
   };
@@ -223,7 +235,7 @@ document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click"
   document.querySelectorAll(".seg button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
   onCheckin();
 }));
-["hrv", "rhr", "sleep", "sick"].forEach(id => $(id).addEventListener("input", onCheckin));
+["hrv", "rhr", "sleep", "sick", "noCommute"].forEach(id => $(id).addEventListener("input", onCheckin));
 $("syncBtn").addEventListener("click", () => refresh());
 $("settingsBtn").addEventListener("click", () => openSettings());
 $("closeSettings").addEventListener("click", closeSettings);
