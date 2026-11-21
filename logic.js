@@ -205,7 +205,7 @@ function situation(cfg, acts, days, today) {
     swims_this_week: acts.filter(a => a.sport === "swim" && a.date >= monday && a.date < today).length,
     commute_load_7d: Math.round(acts.filter(a => a.commute && lastWeek.includes(a.date)).reduce((t, a) => t + a.load, 0)),
     hrv_trend_z: hrv7.length >= 4 ? mean(hrv7) : null,
-    hard_28d: Object.fromEntries(SPORTS.map(s => [s, acts.filter(a => a.sport === s && a.kind === "hard" && a.date >= shift(today, -28) && a.date < today).length])),
+    hard_42d: Object.fromEntries(SPORTS.map(s => [s, acts.filter(a => a.sport === s && a.kind === "hard" && a.date >= shift(today, -42) && a.date < today).length])),
     strength_this_week: strength.filter(d => d >= monday).length,
     last_strength: strength[strength.length - 1] || null,
   };
@@ -221,42 +221,72 @@ function zones(cfg, ftp) {
     run_tempo: `${pace(t * 1.06)}–${pace(t * 1.09)}/km`, swim_css: `${pace(css)}/100 m`, swim_easy: `${pace(css + 12)}/100 m` };
 }
 
-// Variants keep the week from repeating itself. v rotates: for hard sessions with the number of
-// hard sessions of that sport in the last 4 weeks, for easy ones with the day.
+// Hard sessions: a main session that gets longer step by step, with a variety session every third time.
+// v for hard sessions = number of hard sessions of that sport in the last 6 weeks, so the step also
+// drops back by itself after a break. For easy sessions v is the day, which rotates the variants.
 function session(z, sport, kind, ph, minutes, v = 0) {
-  const s = variantSession(z, sport, kind, ph, minutes, v);
+  const s = kind === "quality" && (sport === "bike" || sport === "run")
+    ? progressiveSession(z, sport, ph, v) : variantSession(z, sport, kind, ph, minutes, v);
   if (kind === "quality") s.hard = true;
   return s;
 }
 
-function variantSession(z, sport, kind, ph, minutes, v) {
+const LADDERS = {
+  bike: {
+    base: { title: "Sweet spot → threshold", zone: ["ss", "ss", "ss", "ss", "thr", "thr"],
+      sets: ["3×12", "3×15", "2×20", "2×25", "3×10", "3×12"], rest: "5 min easy" },
+    build: { title: "Race-power blocks", zone: ["race", "race", "race", "race"],
+      sets: ["2×20", "2×25", "2×30", "3×25"], rest: "5 min easy" },
+  },
+  run: {
+    base: { title: "Threshold intervals", zone: ["run_thr", "run_thr", "run_thr", "run_thr", "run_thr", "run_thr"],
+      sets: ["6×3", "5×4", "4×5", "4×6", "3×8", "3×10"], rest: "90 s–2 min jog" },
+    build: { title: "Tempo blocks", zone: ["run_tempo", "run_tempo", "run_tempo", "run_tempo"],
+      sets: ["2×12", "2×15", "3×12", "2×20"], rest: "3 min jog" },
+  },
+};
+
+function progressiveSession(z, sport, ph, count) {
   const base = ph === "base";
+  if (count % 3 === 2) { // every third hard session: variety
+    const options = sport === "bike" ? (base ? [
+      { sport, title: "VO2max intervals", minutes: 70, steps: ["20 min warm-up with 3×30 s fast", `5×4 min at ${z.vo2}, 4 min very easy between`,
+        "Hard but even: the last one as strong as the first", "10 min easy"] },
+      { sport, title: "Strength-endurance ride", minutes: 75, steps: ["15 min warm-up", `5×6 min at ${z.tempo}, 60–65 rpm, seated`,
+        "3 min easy at normal cadence between", "Builds pedalling force for the aero position", "10 min easy"] },
+    ] : [
+      { sport, title: "Race simulation", minutes: 90, steps: ["15 min warm-up", `60 min at ${z.race}, steady (VI under 1.05), in race position`,
+        "Fuel and drink exactly as planned for the race", "If your legs are fine: 10–15 min easy run straight after"] },
+      { sport, title: "Threshold blocks", minutes: 80, steps: ["15 min warm-up", `3×12 min at ${z.thr}, 5 min easy between`, "10 min easy"] },
+    ]) : (base ? [
+      { sport, title: "Hill repeats", minutes: 55, steps: ["15 min easy", "8×60 s uphill, hard but controlled, jog back down",
+        "Short quick steps, drive the arms", "10 min easy + 4 strides on the flat"] },
+      { sport, title: "Fartlek", minutes: 55, steps: ["15 min easy", "10×1 min fast (about 5 km pace) / 1 min easy jog", "10 min easy"] },
+    ] : [
+      { sport, title: "2 km repeats", minutes: 70, steps: ["15 min easy", `4×2 km at ${z.run_thr}, 2 min jog`, "10 min easy"] },
+      { sport, title: "Progression run", minutes: 55, steps: [`35 min at ${z.run_easy}`, `Then 20 min at ${z.run_tempo}`, "5 min easy"] },
+    ]);
+    const s = options[Math.floor(count / 3) % options.length];
+    s.steps.push("Variety session: every third hard " + sport + " session is a different type.");
+    return s;
+  }
+  const ladder = LADDERS[sport][base ? "base" : "build"];
+  const mainDone = count - Math.floor(count / 3);
+  const step = Math.min(ladder.sets.length - 1, Math.floor(mainDone / 2));
+  const set = ladder.sets[step], zone = z[ladder.zone[step]];
+  const [reps, mins] = set.split("×").map(Number);
+  const warm = sport === "bike" ? "15 min warm-up, building" : "15 min easy + 4 strides";
+  const total = 25 + reps * mins + (reps - 1) * (sport === "bike" ? 5 : 2);
+  const name = sport === "bike" ? (ladder.zone[step] === "ss" ? "Sweet spot" : ladder.zone[step] === "thr" ? "Threshold" : "Race power")
+    : ladder.title.split(" ")[0];
+  return { sport, title: `${name} ${set} min`, minutes: total, steps: [warm, `${set} min at ${zone}, ${ladder.rest} between`,
+    sport === "bike" ? "Cadence 85–95, aim for steady power" : "Even pace: the last one as fast as the first",
+    sport === "bike" ? "10 min easy, 60–80 g carbs/h" : "10 min easy",
+    `Step ${step + 1} of ${ladder.sets.length}: gets longer after every two of these sessions you complete.`] };
+}
+
+function variantSession(z, sport, kind, ph, minutes, v) {
   const choose = list => list[v % list.length];
-  if (sport === "bike" && kind === "quality") return choose(base ? [
-    baseSession(z, sport, kind, ph),
-    { sport, title: "Threshold intervals", minutes: 75, steps: ["15 min warm-up, building", `4×8 min at ${z.thr}, 4 min easy between`,
-      "Seated, cadence 88–95", "10 min easy"] },
-    { sport, title: "VO2max intervals", minutes: 70, steps: ["20 min warm-up with 3×30 s fast", `5×4 min at ${z.vo2}, 4 min very easy between`,
-      "Hard but even: the last one as strong as the first", "10 min easy"] },
-    { sport, title: "Strength-endurance ride", minutes: 75, steps: ["15 min warm-up", `5×6 min at ${z.tempo}, 60–65 rpm, seated`,
-      "3 min easy at normal cadence between", "Builds pedalling force for the aero position", "10 min easy"] },
-  ] : [
-    baseSession(z, sport, kind, ph),
-    { sport, title: "Threshold blocks", minutes: 80, steps: ["15 min warm-up", `3×12 min at ${z.thr}, 5 min easy between`, "10 min easy"] },
-    { sport, title: "Race simulation", minutes: 90, steps: ["15 min warm-up", `60 min at ${z.race}, steady (VI under 1.05), in race position`,
-      "Fuel and drink exactly as planned for the race", "If your legs are fine: 10–15 min easy run straight after"] },
-  ]);
-  if (sport === "run" && kind === "quality") return choose(base ? [
-    baseSession(z, sport, kind, ph),
-    { sport, title: "Hill repeats", minutes: 55, steps: ["15 min easy", "8×60 s uphill, hard but controlled, jog back down",
-      "Short quick steps, drive the arms", "10 min easy + 4 strides on the flat"] },
-    { sport, title: "Tempo intervals", minutes: 60, steps: ["15 min easy", `3×8 min at ${z.run_tempo}, 2 min jog`, "10 min easy"] },
-    { sport, title: "1 km repeats", minutes: 60, steps: ["15 min easy + 4 strides", `5×1 km at ${z.run_thr}, 2 min jog`, "10 min easy"] },
-  ] : [
-    baseSession(z, sport, kind, ph),
-    { sport, title: "2 km repeats", minutes: 70, steps: ["15 min easy", `4×2 km at ${z.run_thr}, 2 min jog`, "10 min easy"] },
-    { sport, title: "Progression run", minutes: 55, steps: [`35 min at ${z.run_easy}`, `Then 20 min at ${z.run_tempo}`, "5 min easy"] },
-  ]);
   if (sport === "bike" && kind === "endurance") {
     const s = baseSession(z, sport, kind, ph, minutes), m = s.minutes;
     return choose([s,
@@ -337,7 +367,7 @@ function planDay(cfg, z, sit, date, level, extraKey, back) {
   if (sit.ramp_7d > 6) noHard.push(`Load rose fast this week (+${Math.round(sit.ramp_7d)} fitness).`);
 
   const dayNo = Math.round(dateOf(date) / 864e5);
-  const variant = (s, kind) => (kind === "quality" ? sit.hard_28d[s] : dayNo);
+  const variant = (s, kind) => (kind === "quality" ? sit.hard_42d[s] : dayNo);
   const pick = (kind, prefs, minutes) => {
     for (const s of prefs) if (can[s]) return session(z, s, kind, ph, minutes, variant(s, kind));
     return can.bike ? session(z, "bike", "recovery", ph) : session(z, "rest", "rest", ph);
