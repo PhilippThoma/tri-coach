@@ -32,8 +32,16 @@ const num = x => (typeof x === "number" && x > 0 ? x : null);
 function compactActivity(a) {
   return { id: a.id, s: a.start_date_local, t: a.type, n: a.name, mt: a.moving_time, et: a.elapsed_time, d: a.distance,
     l: a.icu_training_load, tr: a.trimp, i: a.icu_intensity, hr: a.average_heartrate, np: a.icu_weighted_avg_watts,
-    ap: a.icu_average_watts, c: a.commute, tn: a.trainer, ftp: a.icu_ftp };
+    ap: a.icu_average_watts, c: a.commute, tn: a.trainer, ftp: a.icu_ftp, hs: hardSecs(a) };
 }
+
+// Seconds at threshold or above: heart-rate zones 4+ or power zones Z4+ (intervals.icu's zones).
+function hardSecs(a) {
+  const hr = (a.icu_hr_zone_times || []).slice(3).reduce((t, s) => t + (s || 0), 0);
+  const pw = (a.icu_zone_times || []).filter(z => ["Z4", "Z5", "Z6", "Z7"].includes(z.id)).reduce((t, z) => t + (z.secs || 0), 0);
+  return Math.max(hr, pw);
+}
+const HARD_ZONE_SECS = 600; // 10+ min at threshold makes a session hard, whatever its average
 function compactWellness(w) {
   return { id: w.id, hrv: w.hrv, rhr: w.restingHR, ss: w.sleepSecs, sc: w.sleepScore };
 }
@@ -76,7 +84,7 @@ function normalise(raw, cfg) {
       date: a.s.slice(0, 10), hour: Number(a.s.slice(11, 13)), sport: sportOf(a.t), type: a.t || "",
       indoor: !!a.tn || (a.t || "").toLowerCase().includes("virtual"), name: a.n || "",
       dur, km: (num(a.d) || 0) / 1000, load: num(a.l) || num(a.tr) || dur * 0.6, intensity,
-      hr: num(a.hr), power: num(a.np) || num(a.ap), commute: !!a.c,
+      hr: num(a.hr), power: num(a.np) || num(a.ap), commute: !!a.c, hardSecs: a.hs || 0,
     });
   }
   const c = cfg.commute, kw = c.keywords.map(k => k.toLowerCase());
@@ -97,7 +105,7 @@ function classify(acts) {
       const rate = a.load / (a.dur / 60);
       if (a.commute) a.kind = "commute";
       else if (a.dur >= LONG_MIN[sport]) a.kind = "long";
-      else if ((a.intensity && a.intensity >= 0.85) || (a.dur >= 20 && rate >= hardRate)) a.kind = "hard";
+      else if ((a.intensity && a.intensity >= 0.85) || (a.dur >= 20 && rate >= hardRate) || a.hardSecs >= HARD_ZONE_SECS) a.kind = "hard";
       else a.kind = "easy";
     }
   }
@@ -197,6 +205,7 @@ function situation(cfg, acts, days, today) {
     swims_this_week: acts.filter(a => a.sport === "swim" && a.date >= monday && a.date < today).length,
     commute_load_7d: Math.round(acts.filter(a => a.commute && lastWeek.includes(a.date)).reduce((t, a) => t + a.load, 0)),
     hrv_trend_z: hrv7.length >= 4 ? mean(hrv7) : null,
+    hard_28d: Object.fromEntries(SPORTS.map(s => [s, acts.filter(a => a.sport === s && a.kind === "hard" && a.date >= shift(today, -28) && a.date < today).length])),
     strength_this_week: strength.filter(d => d >= monday).length,
     last_strength: strength[strength.length - 1] || null,
   };
@@ -207,12 +216,73 @@ const pace = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2
 function zones(cfg, ftp) {
   const w = (lo, hi) => `${Math.round(ftp * lo / 5) * 5}–${Math.round(ftp * hi / 5) * 5} W`;
   const t = cfg.paces.runThr, css = cfg.paces.swimCss;
-  return { ftp, z2: w(0.60, 0.72), ss: w(0.88, 0.92), thr: w(0.96, 1.0), race: w(0.78, 0.83),
+  return { ftp, z2: w(0.60, 0.72), ss: w(0.88, 0.92), thr: w(0.96, 1.0), race: w(0.78, 0.83), vo2: w(1.08, 1.15), tempo: w(0.80, 0.85),
     run_easy: `${pace(t * 1.25)}–${pace(t * 1.38)}/km`, run_thr: `${pace(t)}–${pace(t * 1.03)}/km`,
     run_tempo: `${pace(t * 1.06)}–${pace(t * 1.09)}/km`, swim_css: `${pace(css)}/100 m`, swim_easy: `${pace(css + 12)}/100 m` };
 }
 
-function session(z, sport, kind, ph, minutes) {
+// Variants keep the week from repeating itself. v rotates: for hard sessions with the number of
+// hard sessions of that sport in the last 4 weeks, for easy ones with the day.
+function session(z, sport, kind, ph, minutes, v = 0) {
+  const s = variantSession(z, sport, kind, ph, minutes, v);
+  if (kind === "quality") s.hard = true;
+  return s;
+}
+
+function variantSession(z, sport, kind, ph, minutes, v) {
+  const base = ph === "base";
+  const choose = list => list[v % list.length];
+  if (sport === "bike" && kind === "quality") return choose(base ? [
+    baseSession(z, sport, kind, ph),
+    { sport, title: "Threshold intervals", minutes: 75, steps: ["15 min warm-up, building", `4×8 min at ${z.thr}, 4 min easy between`,
+      "Seated, cadence 88–95", "10 min easy"] },
+    { sport, title: "VO2max intervals", minutes: 70, steps: ["20 min warm-up with 3×30 s fast", `5×4 min at ${z.vo2}, 4 min very easy between`,
+      "Hard but even: the last one as strong as the first", "10 min easy"] },
+    { sport, title: "Strength-endurance ride", minutes: 75, steps: ["15 min warm-up", `5×6 min at ${z.tempo}, 60–65 rpm, seated`,
+      "3 min easy at normal cadence between", "Builds pedalling force for the aero position", "10 min easy"] },
+  ] : [
+    baseSession(z, sport, kind, ph),
+    { sport, title: "Threshold blocks", minutes: 80, steps: ["15 min warm-up", `3×12 min at ${z.thr}, 5 min easy between`, "10 min easy"] },
+    { sport, title: "Race simulation", minutes: 90, steps: ["15 min warm-up", `60 min at ${z.race}, steady (VI under 1.05), in race position`,
+      "Fuel and drink exactly as planned for the race", "If your legs are fine: 10–15 min easy run straight after"] },
+  ]);
+  if (sport === "run" && kind === "quality") return choose(base ? [
+    baseSession(z, sport, kind, ph),
+    { sport, title: "Hill repeats", minutes: 55, steps: ["15 min easy", "8×60 s uphill, hard but controlled, jog back down",
+      "Short quick steps, drive the arms", "10 min easy + 4 strides on the flat"] },
+    { sport, title: "Tempo intervals", minutes: 60, steps: ["15 min easy", `3×8 min at ${z.run_tempo}, 2 min jog`, "10 min easy"] },
+    { sport, title: "1 km repeats", minutes: 60, steps: ["15 min easy + 4 strides", `5×1 km at ${z.run_thr}, 2 min jog`, "10 min easy"] },
+  ] : [
+    baseSession(z, sport, kind, ph),
+    { sport, title: "2 km repeats", minutes: 70, steps: ["15 min easy", `4×2 km at ${z.run_thr}, 2 min jog`, "10 min easy"] },
+    { sport, title: "Progression run", minutes: 55, steps: [`35 min at ${z.run_easy}`, `Then 20 min at ${z.run_tempo}`, "5 min easy"] },
+  ]);
+  if (sport === "bike" && kind === "endurance") {
+    const s = baseSession(z, sport, kind, ph, minutes), m = s.minutes;
+    return choose([s,
+      { sport, title: "Endurance ride: single-leg drills", minutes: m, steps: [`${m} min at ${z.z2}`, "Include 4×(1 min left leg, 1 min right leg) for pedalling technique."] },
+      { sport, title: "Endurance ride: free ride", minutes: m, steps: [`${m} min at ${z.z2}`, "Just ride: steady, relaxed, enjoy it."] }]);
+  }
+  if (sport === "run" && kind === "endurance") {
+    const s = baseSession(z, sport, kind, ph, minutes), m = s.minutes;
+    return choose([s,
+      { sport, title: "Easy run: hilly route", minutes: m, steps: [`${m} min at ${z.run_easy} (or HR under ~150) on a hilly route`, "Walk steep bits if HR climbs."] },
+      { sport, title: "Easy run: progression finish", minutes: m, steps: [`${m - 10} min at ${z.run_easy}`, `Last 10 min gradually up to ${z.run_tempo.split("–")[1]}`] }]);
+  }
+  if (sport === "swim" && kind === "quality") return choose([
+    baseSession(z, sport, kind, ph),
+    { sport, title: "Swim: threshold set", minutes: 50, steps: ["300 m easy + 4×50 m drills", `5×200 m at ${z.swim_css}, 20 s rest`,
+      "Sight forward every 6 strokes in the last 50 m of each", "200 m easy"] }]);
+  if (sport === "swim") return choose([
+    baseSession(z, sport, kind, ph),
+    { sport, title: "Swim: single-arm & catch-up", minutes: 40, steps: ["300 m easy", "6×50 m single-arm (25 m each arm)", "6×50 m catch-up with a pull buoy",
+      `4×100 m at ${z.swim_easy}, count strokes per length`, "100 m easy"] },
+    { sport, title: "Swim: sighting & feel", minutes: 40, steps: ["200 m easy", "8×25 m fist swimming, then 25 m normal", "4×50 m sighting practice: look forward every 6 strokes",
+      `4×100 m at ${z.swim_easy}`, "100 m easy"] }]);
+  return baseSession(z, sport, kind, ph, minutes);
+}
+
+function baseSession(z, sport, kind, ph, minutes) {
   if (kind === "rest") return { sport: "rest", title: "Rest day", minutes: 0,
     steps: ["No training. A walk or 15 min of mobility is fine.", "Ride the commute home very easy."] };
   if (sport === "bike") {
@@ -266,11 +336,14 @@ function planDay(cfg, z, sit, date, level, extraKey, back) {
   if (sit.form < -20) noHard.push(`Fatigue is high (form ${Math.round(sit.form)}).`);
   if (sit.ramp_7d > 6) noHard.push(`Load rose fast this week (+${Math.round(sit.ramp_7d)} fitness).`);
 
+  const dayNo = Math.round(dateOf(date) / 864e5);
+  const variant = (s, kind) => (kind === "quality" ? sit.hard_28d[s] : dayNo);
   const pick = (kind, prefs, minutes) => {
-    for (const s of prefs) if (can[s]) return session(z, s, kind, ph, minutes);
+    for (const s of prefs) if (can[s]) return session(z, s, kind, ph, minutes, variant(s, kind));
     return can.bike ? session(z, "bike", "recovery", ph) : session(z, "rest", "rest", ph);
   };
-  const swimDue = can.swim && sit.swims_this_week < cfg.swimsPerWeek;
+  // A missing swim is suggested every other day, not every day, so easy days keep some variety.
+  const swimDue = can.swim && sit.swims_this_week < cfg.swimsPerWeek && (dayNo % 2 === 0 || (!can.bike && !can.run));
   const out = (s, commute) => ({ level, session: s, why, commute: wd >= 5 || !can.bike ? "" : commute });
 
   if (level === "red") {
@@ -303,11 +376,11 @@ function planDay(cfg, z, sit, date, level, extraKey, back) {
   if (order.length) {
     const sport = order[0];
     why.push(`You're recovered and your last hard ${sport} session was ${since(sport)} days ago.`);
-    return out(session(z, sport, "quality", ph), sport === "bike"
+    return out(session(z, sport, "quality", ph, null, variant(sport, "quality")), sport === "bike"
       ? "Alternative: skip the indoor session and do 4–6 hard ramps on the way home instead."
       : "This session is your hard work. Ride home easy.");
   }
-  if (can.swim) { why.push("Running and cycling are off, so a hard swim is today's quality."); return out(session(z, "swim", "quality", ph), "Ride home easy."); }
+  if (can.swim) { why.push("Running and cycling are off, so a hard swim is today's quality."); return out(session(z, "swim", "quality", ph, null, variant("swim", "quality")), "Ride home easy."); }
   why.push("All three sports are paused.");
   return out(session(z, "rest", "rest", ph), "");
 }
@@ -345,7 +418,7 @@ function adjustForNoCommute(plan, date) {
   p.commute = "";
   if (weekdayMon0(date) >= 5) return p;
   const s = p.session;
-  if (p.level !== "red" && s.sport === "bike" && s.title === "Endurance ride") {
+  if (p.level !== "red" && s.sport === "bike" && s.title.startsWith("Endurance ride")) {
     s.minutes += 30;
     s.steps[0] = s.steps[0].replace(/^\d+ min/, `${s.minutes} min`);
     p.why.push("No commute today: 30 extra easy minutes replace the riding you'd normally do on the way home.");
@@ -381,7 +454,7 @@ function buildState(cfg, rawActs, rawWell, today) {
       let extra = null;
       if (date === tomorrow) {
         const s0 = plans[today].green.session, t = s0.title.toLowerCase();
-        if (/interval|blocks|tempo|race-pace/.test(t) || t.startsWith("long")) {
+        if (s0.hard || t.startsWith("long")) {
           const kind = `${s0.sport}-${t.startsWith("long") ? "long" : "hard"}`;
           extra = { date: today, kind, hard: kind.endsWith("-hard") };
         }
